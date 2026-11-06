@@ -1,0 +1,587 @@
+import React, { useEffect, useMemo, useState } from "react";
+import {
+  ActivityIndicator,
+  Image,
+  Modal,
+  Platform,
+  KeyboardAvoidingView,
+  Pressable,
+  ScrollView,
+  Text,
+  TextInput,
+  View,
+  DeviceEventEmitter,
+} from "react-native";
+import { useNavigation, useRoute } from "@react-navigation/native";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import { Ionicons } from "@expo/vector-icons";
+import * as ImagePicker from "expo-image-picker";
+import { getCurrentUser } from "../services/supabaseAuth";
+import { getAlumniProfile } from "../services/alumniQueries";
+import { createPost, updatePost } from "../services/postQueries";
+import { getFollowing } from "../services/connectionQueries";
+import styles from "../styles/CreatePostScreen.styles";
+import { useCurrentUserProfile } from "../context/CurrentUserProfileContext";
+import { ThemedAlert } from "../components/ThemedAlert";
+
+const extractMentionQuery = (value) => {
+  const text = String(value ?? "");
+  const match = text.match(/(^|\s)@([a-zA-Z0-9_.-]*)$/);
+  if (!match) return null;
+  const query = match[2] ?? "";
+  const mentionStart = text.length - query.length - 1;
+  return { query, mentionStart, mentionEnd: text.length };
+};
+
+const toMentionHandle = (firstName, lastName) => {
+  const normalizedHandle = `${firstName ?? ""}_${lastName ?? ""}`
+    .toLowerCase()
+    .replace(/\s+/g, "_")
+    .replace(/[^a-z0-9_.-]/g, "")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return normalizedHandle || "alumni";
+};
+
+const CreatePostScreen = () => {
+  const navigation = useNavigation();
+  const route = useRoute();
+  const insets = useSafeAreaInsets();
+  
+  const { currentUserProfile } = useCurrentUserProfile();
+  const editingPost = route.params?.post ?? null;
+  const isEditMode = Boolean(editingPost?.id);
+  
+  const [postText, setPostText] = useState("");
+  const [userData, setUserData] = useState(null);
+  const [selectedAudience, setSelectedAudience] = useState("public");
+  const [connections, setConnections] = useState([]);
+  
+  const [selectedMediaUris, setSelectedMediaUris] = useState([]);
+  const [selectedMediaFiles, setSelectedMediaFiles] = useState([]);
+  const [existingMediaItems, setExistingMediaItems] = useState([]);
+  const [removedExistingMediaIds, setRemovedExistingMediaIds] = useState([]);
+  const [isPickingMedia, setIsPickingMedia] = useState(false);
+  
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [selection, setSelection] = useState({ start: 0, end: 0 });
+
+  const canPost = postText.trim().length > 0 || selectedMediaUris.length > 0 || existingMediaItems.length > 0;
+
+  const mentionContext = useMemo(() => {
+    const text = String(postText ?? "");
+    const cursor = selection && typeof selection.start === "number" ? selection.start : text.length;
+    const before = text.slice(0, cursor);
+    const match = before.match(/(^|\s)@([a-zA-Z0-9_.-]*)$/);
+    if (!match) return null;
+    const query = match[2] ?? "";
+    const mentionStart = cursor - query.length - 1;
+    const mentionEnd = cursor;
+    return { query, mentionStart, mentionEnd };
+  }, [postText, selection]);
+
+  const mentionSuggestions = useMemo(() => {
+    if (!mentionContext) return [];
+    const query = mentionContext.query.toLowerCase();
+    return connections
+      .map((connection, index) => {
+        const firstName = connection?.first_name ?? "";
+        const lastName = connection?.last_name ?? "";
+        const name = `${connection?.first_name ?? ""} ${connection?.last_name ?? ""}`.trim() || "Alumni";
+        return {
+          id: connection?.id,
+          name,
+          handle: toMentionHandle(firstName, lastName),
+          avatar: null, 
+          _index: index,
+        };
+      })
+      .filter((item) => !query ? true : item.name.toLowerCase().includes(query) || item.handle.includes(query))
+      .slice(0, 5);
+  }, [connections, mentionContext]);
+
+  useEffect(() => {
+    const fetchProfile = async () => {
+      try {
+        const supaUser = await getCurrentUser();
+        if (!supaUser) return;
+        const profile = await getAlumniProfile(supaUser.id);
+        const following = await getFollowing(supaUser.id).catch(() => []);
+        setUserData(profile ?? null);
+        setConnections(Array.isArray(following) ? following.map((f) => f.followed ?? f) : []);
+      } catch (error) {
+        console.error("Failed to fetch create post profile:", error);
+        setConnections([]);
+      }
+    };
+    fetchProfile();
+  }, []);
+
+  useEffect(() => {
+    if (!editingPost) {
+      const initialCaption = route.params?.initialCaption;
+      if (typeof initialCaption === "string" && initialCaption.trim()) {
+        setPostText(initialCaption);
+      }
+      setExistingMediaItems([]);
+      setRemovedExistingMediaIds([]);
+      setSelectedMediaFiles([]);
+      return;
+    }
+    setPostText(editingPost.caption ?? "");
+    setSelectedAudience(editingPost.visibility ?? "public");
+    setSelectedMediaUris([]);
+    setSelectedMediaFiles([]);
+    setRemovedExistingMediaIds([]);
+    setExistingMediaItems(
+      Array.isArray(editingPost.images)
+        ? editingPost.images.map((image) => ({ id: image?.id ?? null, uri: image?.image_url ?? image?.image_path ?? image?.uri ?? "" })).filter((image) => Boolean(image.uri))
+        : []
+    );
+  }, [editingPost]);
+
+  const getMediaMimeType = (uri) => {
+    const extension = uri.split(".").pop()?.toLowerCase();
+    switch (extension) {
+      case "png": return "image/png";
+      case "heic": return "image/heic";
+      case "webp": return "image/webp";
+      case "mp4": return "video/mp4";
+      case "mov": return "video/quicktime";
+      default: return "image/jpeg";
+    }
+  };
+
+  const handlePickMedia = async () => {
+    try {
+      setIsPickingMedia(true);
+      const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (permissionResult.status !== "granted") {
+        ThemedAlert.alert("Permission required", "Permission to access media is required to choose an image or video.", [{ text: "OK" }], { variant: "error" });
+        return;
+      }
+
+      const activeExisting = existingMediaItems.filter((img) => !removedExistingMediaIds.includes(img.id));
+      let currentImageCount = 0;
+      let currentVideoCount = 0;
+
+      const checkMediaType = (uri, typeStr) => {
+        const mime = typeStr ?? getMediaMimeType(uri);
+        if (mime.startsWith("video/")) currentVideoCount++;
+        else currentImageCount++;
+      };
+
+      activeExisting.forEach((item) => checkMediaType(item.uri));
+      selectedMediaFiles.forEach((file) => checkMediaType(file.uri, file.type));
+
+      let mediaTypeOption = ImagePicker.MediaTypeOptions.All;
+      let maxSelectable = 6;
+
+      if (currentImageCount >= 5 && currentVideoCount >= 1) {
+        ThemedAlert.alert("Limit Reached", "You have reached the maximum limit of 5 images and 1 video per post.", [{ text: "OK" }]);
+        return;
+      } else if (currentImageCount >= 5) {
+        mediaTypeOption = ImagePicker.MediaTypeOptions.Videos;
+        maxSelectable = 1 - currentVideoCount;
+      } else if (currentVideoCount >= 1) {
+        mediaTypeOption = ImagePicker.MediaTypeOptions.Images;
+        maxSelectable = 5 - currentImageCount;
+      } else {
+        mediaTypeOption = ImagePicker.MediaTypeOptions.All;
+        maxSelectable = (5 - currentImageCount) + (1 - currentVideoCount);
+      }
+      
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: mediaTypeOption,
+        allowsEditing: false,
+        allowsMultipleSelection: true,
+        selectionLimit: maxSelectable,
+        base64: false,
+        quality: 0.85,
+      });
+
+      if (result.canceled) return;
+
+          const normalizedAssets = await Promise.all(
+      (result.assets || []).map(async (asset) => {
+        if (Platform.OS === "ios" && asset.uri?.startsWith("ph://")) {
+          try {
+            const FileSystem = require("expo-file-system");
+            const dest = `${FileSystem.cacheDirectory}upload-${Date.now()}-${Math.random().toString(36).slice(2,8)}.jpg`;
+            await FileSystem.copyAsync({ from: asset.uri, to: dest });
+            return { ...asset, uri: dest };
+          } catch (e) {
+            console.warn("ph:// normalization failed:", e);
+            return asset;
+          }
+        }
+        return asset;
+      })
+    );
+
+      const pickedAssets = Array.isArray(normalizedAssets)
+      ? normalizedAssets.filter((asset) => Boolean(asset?.uri))
+        : result.uri ? [{ uri: result.uri, fileName: null, mimeType: null, type: result.type, fileSize: result.fileSize }] : [];
+
+      const validNewUris = [];
+      const validNewFiles = [];
+
+      let sizeErrorMessages = [];
+      let limitErrorMessages = [];
+
+      for (const asset of pickedAssets) {
+        const mimeType = asset.mimeType ?? getMediaMimeType(asset.uri);
+        const isVideo = asset.type === "video" || mimeType.startsWith("video/");
+        const fileSize = asset.fileSize || 0;
+
+        const MAX_VIDEO_SIZE = 30 * 1024 * 1024;
+        const MAX_IMAGE_SIZE = 8 * 1024 * 1024;
+
+        if (isVideo && fileSize > MAX_VIDEO_SIZE) {
+          if (!sizeErrorMessages.includes("Videos must be 30MB or less.")) {
+            sizeErrorMessages.push("Videos must be 30MB or less.");
+          }
+          continue;
+        }
+
+        if (!isVideo && fileSize > MAX_IMAGE_SIZE) {
+          if (!sizeErrorMessages.includes("Images must be 8MB or less.")) {
+            sizeErrorMessages.push("Images must be 8MB or less.");
+          }
+          continue;
+        }
+
+        if (isVideo) {
+          if (currentVideoCount >= 1) {
+            if (!limitErrorMessages.includes("You can only attach 1 video per post.")) {
+              limitErrorMessages.push("You can only attach 1 video per post.");
+            }
+            continue;
+          }
+          currentVideoCount++;
+        } else {
+          if (currentImageCount >= 5) {
+            if (!limitErrorMessages.includes("You can only attach up to 5 images per post.")) {
+              limitErrorMessages.push("You can only attach up to 5 images per post.");
+            }
+            continue;
+          }
+          currentImageCount++;
+        }
+
+        const thumbnailUri = isVideo ? (asset.thumbnail || asset.uri) : null;
+
+        validNewUris.push(asset.uri);
+        validNewFiles.push({
+          uri: asset.uri,
+          name: asset.fileName ?? `post-media-${validNewUris.length}-${Date.now()}.${asset.uri.split(".").pop() || (isVideo ? "mp4" : "jpg")}`,
+          type: mimeType,
+          thumbnail: thumbnailUri, 
+          isVideo: isVideo,        
+        });
+      }
+
+      if (sizeErrorMessages.length > 0 || limitErrorMessages.length > 0) {
+        const combinedErrors = [...sizeErrorMessages, ...limitErrorMessages].join("\n");
+        ThemedAlert.alert("Media Selection", combinedErrors, [{ text: "OK" }]);
+      }
+
+      if (validNewUris.length > 0) {
+        setSelectedMediaUris((prev) => [...prev, ...validNewUris]);
+        setSelectedMediaFiles((prev) => [...prev, ...validNewFiles]);
+      }
+    } catch (error) {
+      console.error("Failed to pick media:", error);
+      ThemedAlert.alert("Upload failed", "Unable to open the media library.", [{ text: "OK" }], { variant: "error" });
+    } finally {
+      setIsPickingMedia(false);
+    }
+  };
+
+  const handleRemoveMedia = (uriToRemove) => {
+    setSelectedMediaUris((currentUris) => currentUris.filter((uri) => uri !== uriToRemove));
+    setSelectedMediaFiles((currentFiles) => currentFiles.filter((file) => file.uri !== uriToRemove));
+  };
+
+  const handleRemoveExistingMedia = (imageId) => {
+    setRemovedExistingMediaIds((currentIds) => currentIds.includes(imageId) ? currentIds : [...currentIds, imageId]);
+  };
+
+  const previewMediaItems = [
+    ...existingMediaItems
+      .filter((image) => !removedExistingMediaIds.includes(image.id))
+      .map((image, index) => ({
+        key: image.id ?? `existing-${index}`,
+        uri: image.uri,
+        type: "existing",
+        imageId: image.id,
+      })),
+    ...selectedMediaUris.map((uri, index) => ({
+      key: `selected-${index}`,
+      uri,
+      type: "selected",
+    })),
+  ];
+
+  const handleSubmitPost = async (isDraftTarget = false) => {
+    if (isSubmitting) return;
+    if (!canPost) {
+      ThemedAlert.alert(
+        isDraftTarget ? "Nothing to save" : "Nothing to post",
+        isDraftTarget
+          ? "Add text or media before saving a draft."
+          : "Add text or media before creating a post.",
+        [{ text: "OK" }],
+      );
+      return;
+    }
+
+    try {
+      setIsSubmitting(true);
+
+      const supaUser = await getCurrentUser();
+      if (!supaUser) {
+        ThemedAlert.alert("Sign in required", "Please sign in again before creating a post.", [{ text: "OK" }], { variant: "error" });
+        return;
+      }
+
+      const trimmedCaption = postText.trim();
+      const mentionPattern = /@([a-zA-Z0-9_.-]+)/g;
+      const foundHandles = new Set();
+      let match;
+      while ((match = mentionPattern.exec(trimmedCaption)) !== null) {
+        if (match[1]) foundHandles.add(match[1].toLowerCase());
+      }
+
+      const mentionMap = new Map((connections || []).map((c) => [toMentionHandle(c?.first_name ?? "", c?.last_name ?? ""), c?.id]));
+      const mentionedIds = Array.from(foundHandles).map((h) => mentionMap.get(h)).filter(Boolean);
+
+      const mediaFiles = selectedMediaFiles.map(file => ({
+        uri: file.uri,
+        name: file.name,
+        type: file.type,
+        thumbnail: file.thumbnail || null, 
+        isVideo: file.isVideo || false,    
+      }));
+
+      // 🔥 FIX: Enforce true boolean to match the schema correctly
+      const forceDraftBoolean = isDraftTarget === true;
+
+      if (isEditMode) {
+        await updatePost(editingPost.id, {
+          caption: trimmedCaption,
+          visibility: selectedAudience,
+          is_draft: forceDraftBoolean, 
+          images: mediaFiles, 
+          remove_image_ids: removedExistingMediaIds,
+          mentions: mentionedIds,
+        });
+      } else {
+        await createPost(supaUser.id, {
+          caption: trimmedCaption,
+          visibility: selectedAudience,
+          is_draft: forceDraftBoolean, 
+          images: mediaFiles, 
+          mentions: mentionedIds,
+          tracerProgress: route.params?.tracerProgress,
+        });
+      }
+
+      setPostText("");
+      setSelectedAudience("public");
+      setSelectedMediaUris([]);
+      
+      ThemedAlert.alert(
+        forceDraftBoolean ? "Draft saved" : isEditMode ? "Post updated" : "Post created",
+        forceDraftBoolean ? "Your draft was saved successfully." : isEditMode ? "Your post was updated successfully." : "Your post was added successfully.",
+        [{ 
+          text: "OK", 
+          onPress: () => {
+            DeviceEventEmitter.emit("REFRESH_FEED");
+            navigation.goBack();
+          } 
+        }],
+        { variant: "success" }
+      );
+    } catch (error) {
+      console.error("[CreatePost] Error during submission:", error);
+      const errorMsg = error?.message || error?.toString?.() || "Unknown error";
+      ThemedAlert.alert(
+        "Upload failed", 
+        isEditMode ? `Unable to update your post: ${errorMsg}` : `Unable to create your post: ${errorMsg}`, 
+        [{ text: "OK" }], 
+        { variant: "error" }
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleMentionPick = (mentionHandle) => {
+    if (!mentionContext) return;
+    setPostText((currentText) => {
+      const safeText = String(currentText ?? "");
+      const prefix = safeText.slice(0, mentionContext.mentionStart);
+      const suffix = safeText.slice(mentionContext.mentionEnd);
+      return `${prefix}@${mentionHandle} ${suffix}`;
+    });
+  };
+
+  const toggleAudience = () => {
+    setSelectedAudience((prev) => (prev === "public" ? "private" : "public"));
+  };
+
+  return (
+    <>
+      <SafeAreaView style={styles.safeArea} edges={["top"]}>
+        
+        {/* --- HEADER --- */}
+        <View style={styles.headerRow}>
+          <View style={styles.headerLeft}>
+            <Pressable onPress={() => navigation.goBack()} hitSlop={10}>
+              <Ionicons name="arrow-back" size={26} color="#31429B" />
+            </Pressable>
+            <Text style={styles.headerTitle}>{isEditMode ? "Edit Post" : "Add New Post"}</Text>
+          </View>
+          
+          <View style={styles.headerRight}>
+            {/* 🔥 FIX: Ensure draft button sets true correctly */}
+            <Pressable 
+              style={styles.headerDraftsButton} 
+              onPress={() => handleSubmitPost(true)}
+              disabled={isSubmitting}
+            >
+              <Ionicons name="time" size={22} color="#64748B" />
+            </Pressable>
+            
+            <Pressable 
+              style={[styles.headerPostButton, !canPost && styles.headerPostButtonDisabled]} 
+              onPress={() => handleSubmitPost(false)}
+              disabled={!canPost || isSubmitting}
+            >
+              <Ionicons name="send" size={14} color="#FFFFFF" style={{ marginRight: 4 }} />
+              <Text style={styles.headerPostButtonText}>{isEditMode ? "Update" : "Post"}</Text>
+            </Pressable>
+          </View>
+        </View>
+
+        <KeyboardAvoidingView 
+          style={{ flex: 1 }} 
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+        >
+          {/* --- CONTENT AREA (Flexible height) --- */}
+          <ScrollView 
+            style={{ flex: 1 }} 
+            showsVerticalScrollIndicator={false} 
+            contentContainerStyle={styles.content}
+          >
+            
+            <TextInput
+              value={postText}
+              onChangeText={(t) => setPostText(t)}
+              onSelectionChange={({ nativeEvent: { selection } }) => setSelection(selection)}
+              selection={selection}
+              placeholder="Share your thoughts..."
+              placeholderTextColor="#94A3B8"
+              multiline
+              textAlignVertical="top"
+              style={styles.postInput}
+            />
+
+            {mentionContext && mentionSuggestions.length > 0 ? (
+              <View style={styles.mentionPanel}>
+                {mentionSuggestions.map((item) => (
+                  <Pressable
+                    key={String(item.id ?? `mention-${item._index}`)}
+                    style={styles.mentionItem}
+                    onPress={() => handleMentionPick(item.handle)}
+                  >
+                    <Text style={styles.mentionName} numberOfLines={1}>
+                      @{item.handle}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
+
+            {/* --- MEDIA PREVIEWS --- */}
+            {previewMediaItems.length > 0 && (
+              <View style={styles.previewImageWrap}>
+                {previewMediaItems.length === 1 ? (
+                  <View style={styles.previewMediaItem}>
+                    <Image
+                      source={{ uri: previewMediaItems[0].uri }}
+                      style={styles.previewImage}
+                      resizeMode="cover"
+                    />
+                    <Pressable
+                      style={styles.previewRemoveButton}
+                      onPress={() =>
+                        previewMediaItems[0].type === "existing"
+                          ? handleRemoveExistingMedia(previewMediaItems[0].imageId)
+                          : handleRemoveMedia(previewMediaItems[0].uri)
+                      }
+                    >
+                      <Ionicons name="close" size={16} color="#FFFFFF" />
+                    </Pressable>
+                  </View>
+                ) : (
+                  <View style={styles.previewGrid}>
+                    {previewMediaItems.map((item) => (
+                      <View key={item.key} style={styles.previewGridItem}>
+                        <Image
+                          source={{ uri: item.uri }}
+                          style={styles.previewThumbnail}
+                          resizeMode="cover"
+                        />
+                        <Pressable
+                          style={styles.previewRemoveButton}
+                          onPress={() =>
+                            item.type === "existing"
+                              ? handleRemoveExistingMedia(item.imageId)
+                              : handleRemoveMedia(item.uri)
+                          }
+                        >
+                          <Ionicons name="close" size={12} color="#FFFFFF" />
+                        </Pressable>
+                      </View>
+                    ))}
+                  </View>
+                )}
+              </View>
+            )}
+
+          </ScrollView>
+
+          {/* --- BOTTOM TOOLBAR PILLS (Respects Safe Area) --- */}
+          <View style={[styles.bottomToolbar, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+            <Pressable style={styles.pillButton} onPress={toggleAudience}>
+              <Text style={styles.pillText}>
+                {selectedAudience === "public" ? "To Anyone" : "To Friends"}
+              </Text>
+              <Ionicons name="caret-down" size={12} color="#1C1C1E" style={{ marginLeft: 6 }} />
+            </Pressable>
+
+            <Pressable style={styles.pillButton} onPress={handlePickMedia}>
+              <Ionicons name="image-outline" size={16} color="#1C1C1E" style={{ marginRight: 6 }} />
+              <Text style={styles.pillText}>Add Image/Video</Text>
+            </Pressable>
+          </View>
+        </KeyboardAvoidingView>
+
+      </SafeAreaView>
+
+      <Modal visible={isSubmitting} transparent animationType="fade" statusBarTranslucent>
+        <View style={styles.uploadModalBackdrop}>
+          <View style={styles.uploadModalCard}>
+            <ActivityIndicator size="large" color="#31429B" />
+            <Text style={styles.uploadModalTitle}>{isSubmitting ? "Processing..." : "Posting..."}</Text>
+            <Text style={styles.uploadModalText}>Please wait while we handle your content.</Text>
+          </View>
+        </View>
+      </Modal>
+    </>
+  );
+};
+
+export default CreatePostScreen;
