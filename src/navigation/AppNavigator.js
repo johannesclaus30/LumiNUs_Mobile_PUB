@@ -1,0 +1,114 @@
+import React from "react";
+import { createNativeStackNavigator } from "@react-navigation/native-stack";
+import { NativeModules, Pressable, Text, View } from "react-native";
+import LoginScreen from "../screens/LoginScreen";
+import MainTabNavigator from "./MainTabNavigator";
+import AccountSettingsScreen from "../screens/AccountSettingsScreen";
+import SettingsScreen from "../screens/SettingsScreen"; 
+import ViewYearbookScreen from "../screens/ViewYearbookScreen";
+import AlumniTracerScreen from "../screens/AlumniTracerScreen";
+import TracerMenuScreen from "../screens/TracerMenuScreen";
+import TracerFormScreen from "../screens/TracerFormScreen";
+import PhaseSectionsScreen from "../screens/PhaseSectionsScreen";
+import SectionQuestionsScreen from "../screens/SectionQuestionsScreen";
+import SectionCompleteScreen from "../screens/SectionCompleteScreen";
+import EventRegistrationScreen from "../screens/EventRegistrationScreen";
+import ForgetPasswordScreen from "../screens/ForgetPasswordScreen";
+import NewMessageScreen from "../screens/NewMessageScreen";
+import CreatePostScreen from "../screens/CreatePostScreen";
+import ViewEventsScreen from "../screens/ViewEventsScreen";
+import ResetPasswordScreen from "../screens/ResetPasswordScreen";
+import SearchMessageScreen from "../screens/SearchMessageScreen";
+import ConvoScreen from "../screens/ConvoScreen";
+import ChatDetailsScreen from "../screens/ChatDetailsScreen";
+import ChangePasswordScreen from "../screens/ChangePasswordScreen";
+import VerifyResetOtpScreen from "../screens/VerifyResetOtpScreen";
+import CompleteProfileScreen from "../screens/CompleteProfileScreen";
+import DraftsScreen from "../screens/DraftScreen";
+import GlobalSearchScreen from "../screens/GlobalSearchScreen";
+import RestrictedScreen from "../screens/RestrictedScreen";
+import AddSkillsScreen from "../screens/AddSkillsScreen";
+import WorkExperienceScreen from "../screens/WorkExperienceScreen";
+import WorkExperienceFormScreen from "../screens/WorkExperienceFormScreen";
+import ArchivedChatsScreen from "../screens/ArchivedChatsScreen";
+import MentorshipScreen from "../screens/MentorshipScreen"; 
+import ViewPerkScreen from "../screens/ViewPerkScreen"; // <-- FIXED: Singular ViewPerkScreen
+import MentorshipTrackerScreen from "../screens/MentorshipTrackerScreen";
+
+// Profile Screens
+import UserProfileScreen from "../screens/UserProfileScreen"; 
+import ProfileViewScreen from "../screens/ProfileViewScreen";
+
+const Stack = createNativeStackNavigator();
+
+const AppNavigator = ({ isAuthenticated, isRestricted, initialRouteName }) => {
+  return (
+    <Stack.Navigator
+      initialRouteName={initialRouteName || "Login"}
+      screenOptions={{
+        headerShown: false,
+        contentStyle: { backgroundColor: "#FFFFFF" },
+        animation: "slide_from_right",
+      }}
+    >
+      {isAuthenticated ? (
+        // ==========================================
+        // 🟢 AUTHENTICATED: Main App Screens
+        // ==========================================
+        <Stack.Group>
+          <Stack.Screen name="Home" component={MainTabNavigator} />
+          <Stack.Screen name="AccountSettings" component={AccountSettingsScreen} />
+          <Stack.Screen name="SettingsScreen" component={SettingsScreen} />
+          <Stack.Screen name="Profile" component={UserProfileScreen} />
+          <Stack.Screen name="ProfileView" component={ProfileViewScreen} />
+          <Stack.Screen name="ViewYearbook" component={ViewYearbookScreen} />
+          <Stack.Screen name="AlumniTracer" component={AlumniTracerScreen} />
+          <Stack.Screen name="TracerMenu" component={TracerMenuScreen} />
+          <Stack.Screen name="TracerFormScreen" component={TracerFormScreen} />
+          <Stack.Screen name="PhaseSections" component={PhaseSectionsScreen} />
+          <Stack.Screen name="SectionQuestions" component={SectionQuestionsScreen} />
+          <Stack.Screen name="SectionComplete" component={SectionCompleteScreen} />
+          <Stack.Screen name="EventRegistrationScreen" component={EventRegistrationScreen} />
+          <Stack.Screen name="NewMessage" component={NewMessageScreen} />
+          <Stack.Screen name="ConvoScreen" component={ConvoScreen} />
+          <Stack.Screen name="ChatDetailsScreen" component={ChatDetailsScreen} />
+          <Stack.Screen name="SearchMessage" component={SearchMessageScreen} />
+          <Stack.Screen name="CreatePostScreen" component={CreatePostScreen} />
+          <Stack.Screen name="DraftsScreen" component={DraftsScreen} />
+          <Stack.Screen name="GlobalSearch" component={GlobalSearchScreen} />
+          <Stack.Screen name="ViewEventsScreen" component={ViewEventsScreen} />
+          <Stack.Screen name="ChangePassword" component={ChangePasswordScreen} options={{ headerShown: false }} />
+          <Stack.Screen name="CompleteProfile" component={CompleteProfileScreen} options={{ headerShown: false }} />
+          <Stack.Screen name="NotificationsScreen" component={require('../screens/NotificationsScreen').default} />
+          <Stack.Screen name="ArchivedChats" component={ArchivedChatsScreen} />
+          <Stack.Screen name="AddSkillsScreen" component={AddSkillsScreen} />
+          <Stack.Screen name="WorkExperienceScreen" component={WorkExperienceScreen} />
+          <Stack.Screen name="WorkExperienceFormScreen" component={WorkExperienceFormScreen} />
+          <Stack.Screen name="MentorshipScreen" component={MentorshipScreen} />
+          <Stack.Screen name="ViewPerkScreen" component={ViewPerkScreen} /> 
+          <Stack.Screen name="MentorshipTrackerScreen" component={MentorshipTrackerScreen} />
+        </Stack.Group>
+      ) : isRestricted ? (
+        // ==========================================
+        // 🔴 RESTRICTED: Account Blocked/Suspended
+        // ==========================================
+        <Stack.Group>
+          <Stack.Screen name="Restricted" component={RestrictedScreen} options={{ headerShown: false }} />
+        </Stack.Group>
+      ) : (
+        // ==========================================
+        // 🟡 UNAUTHENTICATED: Login & Password Reset
+        // ==========================================
+        <Stack.Group>
+          <Stack.Screen name="Login" component={LoginScreen} />
+          <Stack.Screen name="ForgetPassword" component={ForgetPasswordScreen} />
+          <Stack.Screen name="VerifyResetOtp" component={VerifyResetOtpScreen} options={{ headerShown: false }} />
+          <Stack.Screen name="ResetPassword" component={ResetPasswordScreen} />
+        </Stack.Group>
+      )}
+    </Stack.Navigator>
+    
+  );
+};
+
+export default AppNavigator;
